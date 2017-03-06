@@ -5,6 +5,8 @@ import (
     "encoding/binary"
     ol "github.com/ossrs/go-oryx-lib/logger"
     "fmt"
+    "bytes"
+    "reflect"
 )
 
 type FlvDecoder struct {
@@ -90,6 +92,8 @@ func (v *Tag) Decode(r io.Reader) (err error) {
         td = &AudioTagData{}
     case 9:
         td = &VideoTagData{}
+    case 18:
+        td = &ScriptData{}
     }
 
     if td != nil {
@@ -107,6 +111,107 @@ func (v *Tag) String() string {
 type TadData interface {
     Decode(data []byte) (err error)
     String() string
+}
+
+type ScriptData struct {
+}
+
+func (v *ScriptData) readString(r io.Reader) (strLen uint16, strData []byte, err error) {
+    if err = binary.Read(r, binary.BigEndian, &strLen); err != nil {
+        return
+    }
+    strData = make([]byte, strLen)
+    if err = binary.Read(r, binary.BigEndian, strData); err != nil {
+        return
+    }
+    return
+}
+
+func (v *ScriptData) readValue(r io.Reader) (value interface{}, err error) {
+    var valueType uint8
+    if err = binary.Read(r, binary.BigEndian, &valueType); err != nil {
+        return
+    }
+    switch valueType {
+    case 0:
+        var tmp float64
+        if err = binary.Read(r, binary.BigEndian, &tmp); err != nil {
+            return
+        }
+        value = tmp
+    case 1:
+        // Boolean, UI8
+        var tmp uint8
+        if err = binary.Read(r, binary.BigEndian, &tmp); err != nil {
+            break
+        }
+        value = tmp
+    case 2:
+        var data []byte
+        if _, data , err = v.readString(r); err != nil {
+            return
+        }
+        value = string(data)
+    }
+    return
+}
+
+func (v *ScriptData) Decode(data []byte) (err error) {
+    r := bytes.NewReader(data)
+    for {
+        var metaType uint8
+        if err = binary.Read(r, binary.BigEndian, &metaType); err != nil {
+            break
+        }
+
+        switch metaType {
+        case 2:
+            //String, SCRIPTDATASTRING, video_file_format_spec_v10_1.pdf, page 83
+            var strLen uint16
+            var strData []byte
+            if strLen, strData, err = v.readString(r); err != nil {
+                break
+            }
+            ol.T(nil, fmt.Sprintf("meta type String: len=%v, data=%v", strLen, string(strData)))
+        case 7:
+            // Reference,UI16
+            var metaValue uint16
+            if err = binary.Read(r, binary.BigEndian, &metaValue); err != nil {
+                break
+            }
+            ol.T(nil, fmt.Sprintf("meta type Reference:%v", metaValue))
+        case 8:
+            // ECMA array, SCRIPTDATAECMAARRAY
+            var arrLen uint32 // ECMAArrayLength
+            if err = binary.Read(r, binary.BigEndian, &arrLen); err != nil {
+                return
+            }
+            for i := 0; i < int(arrLen); i ++ { // SCRIPTDATAOBJECTPROPERTY [ ]
+                var strData []byte
+                if _, strData, err = v.readString(r); err != nil {
+                    break
+                }
+
+                propertyName := string(strData)
+                var propertyValue interface{}
+                if propertyValue, err = v.readValue(r); err != nil {
+                    break
+                }
+                ol.T(nil, fmt.Sprintf("read one property: %v-%v, %v", propertyName, propertyValue, reflect.TypeOf(propertyValue)))
+            }
+        default:
+            ol.W(nil, fmt.Sprintf("unsupported type:%v", metaType))
+        }
+    }
+    
+    if err == io.EOF {
+        return nil
+    }
+    return
+}
+
+func (v *ScriptData) String() string {
+    return ""
 }
 
 type AudioTagData struct {
@@ -149,8 +254,10 @@ func (v *VideoTagData) Decode(data []byte) (err error) {
     v.CodecId = EnumCodecId(tmp & 0x0f)
     if v.CodecId == EnumCodecId(7) {
         v.AVCPacketType = EnumAVCPacketType(data[1])
-        v.CompositionTime = int32(Bytes3ToUint32(data[2:5]))
-        v.NALULen = binary.BigEndian.Uint32(data[5:9])
+        v.CompositionTime = int32(Bytes3ToUint32(data[2:5])) // cts, if profile == baseline, cts always = 0, else not.
+        if len(data) >= 6 {
+            v.NALULen = binary.BigEndian.Uint32(data[5:9])
+        }
     }
     return
 }

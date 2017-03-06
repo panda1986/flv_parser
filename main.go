@@ -8,7 +8,7 @@ import (
 )
 
 const (
-    version string = "0.0.1"
+    version string = "0.0.2"
 )
 
 func main() {
@@ -16,7 +16,7 @@ func main() {
 
     var flvUrl string
     flag.StringVar(&flvUrl, "url", "./test.flv", "flv file to be parsed")
-
+    flag.Parse()
     ol.T(nil, "the input flv url is:", flvUrl)
 
     var f * os.File
@@ -36,7 +36,8 @@ func main() {
         tag := &Tag{}
         if err = tag.Decode(f); err != nil {
             ol.E(nil, fmt.Sprintf("decode flv tag failed, err is %v", err))
-            return
+            break
         }
     }
+    ol.T(nil, fmt.Sprintf("decode tag finished, err is %v", err))
 }
